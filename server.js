@@ -2,6 +2,9 @@ const express = require('express')
 const mysql = require('mysql')
 const cors = require('cors')
 const crypto = require('crypto')
+const multer = require('multer')
+const storage = multer.memoryStorage()
+const upload = multer({ storage: storage })
 
 const app = express()
 app.use(cors())
@@ -34,10 +37,18 @@ app.get('/users', (req, res) => {
 
 app.get('/requests', (req, res) => {
   const sql = `
-    SELECT o.requestID, u.first_name, u.last_name, o.status, o.requestDate
+    SELECT o.requestID, u.first_name, u.last_name, o.status, o.requestDate, o.userID
     FROM organizerrequest o
     INNER JOIN user u ON o.userID = u.userID
   `
+  db.query(sql, (err, data) => {
+    if (err) return res.json(err)
+    return res.json(data)
+  })
+})
+
+app.get('/events', (req, res) => {
+  const sql = 'SELECT * from event'
   db.query(sql, (err, data) => {
     if (err) return res.json(err)
     return res.json(data)
@@ -86,15 +97,122 @@ app.post('/login', (req, res) => {
 })
 
 app.post('/request', (req, res) => {
-  const sql = 'INSERT INTO organizerrequest(`userID`) VALUES (?)'
-  const values = [req.body.id]
+  const userID = req.body.userID
+  const checkRequestSql = 'SELECT COUNT(*) AS count FROM organizerrequest WHERE userID = ?'
+  const checkRequestValues = [userID]
+
+  db.query(checkRequestSql, checkRequestValues, (err, result) => {
+    if (err) {
+      console.error(err)
+      return res.status(500).json({ success: false, error: 'Error checking user request' })
+    }
+
+    const userRequestExists = result[0].count > 0
+
+    if (userRequestExists) {
+      return res.json({ success: false, message: 'User has already made a request' })
+    } else {
+      const organizerSql = 'INSERT INTO organizerrequest(`userID`) VALUES (?)'
+      const organizerValues = [userID]
+
+      db.query(organizerSql, organizerValues, (err, data) => {
+        if (err) {
+          console.error(err)
+          return res.status(500).json({ success: false, error: 'Error requesting user' })
+        }
+        return res.json({ success: true, message: 'User successfully requested' })
+      })
+    }
+  })
+})
+
+app.post('/request/action', (req, res) => {
+  const action = req.body.action
+  const requestId = req.body.requestID
+  const userID = req.body.userID
+  let sql, message
+
+  switch (action) {
+    case 'Approve':
+      sql =
+        'UPDATE `organizerrequest` SET `status` = "Approved", `dateReviewed` = NOW() WHERE `organizerrequest`.`requestID` = ?'
+      message = 'User request approved'
+      break
+    case 'Decline':
+      sql =
+        'UPDATE `organizerrequest` SET `status` = "Declined", `dateReviewed` = NOW() WHERE `organizerrequest`.`requestID` = ?'
+      message = 'User request declined'
+      break
+    default:
+      return res.status(400).json({ success: false, error: 'Invalid action' })
+  }
+  const values = [requestId]
 
   db.query(sql, values, (err, data) => {
     if (err) {
       console.error(err)
-      return res.status(500).json({ success: false, error: 'Error requesting user' })
+      return res.status(500).json({ success: false, error: `Error ${action}ing user request` })
     }
-    return res.json({ success: true, message: 'User succesfully requested' })
+
+    if (action === 'Approve') {
+      const updateSql = 'UPDATE `user` SET `user_type` = "organizer" WHERE `user`.`userID` = ?'
+      db.query(updateSql, userID, (updateErr, updateData) => {
+        if (updateErr) {
+          console.error(updateErr)
+          return res.status(500).json({ success: false, error: `Error ${action}ing user request` })
+        }
+        return res.json({ success: true, message })
+      })
+    } else {
+      return res.json({ success: true, message })
+    }
+  })
+})
+
+app.post('/create-events', upload.single('image'), (req, res) => {
+  const {
+    eventName,
+    eventLocation,
+    organizerID,
+    eventStatus,
+    eventDescription,
+    eventDate,
+    eventType,
+  } = req.body
+  const image = req.file.buffer
+
+  if (
+    !eventName ||
+    !eventLocation ||
+    !organizerID ||
+    !eventStatus ||
+    !eventDescription ||
+    !eventDate ||
+    !eventType ||
+    !image
+  ) {
+    return res.status(400).json({ error: 'Please provide all required fields and an image' })
+  }
+
+  const sql =
+    'INSERT INTO events (eventName, eventLocation, organizerID, eventStatus, eventDescription, eventDate, eventType, image) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  const values = [
+    eventName,
+    eventLocation,
+    organizerID,
+    eventStatus,
+    eventDescription,
+    eventDate,
+    eventType,
+    image,
+  ]
+
+  db.query(sql, values, (err, data) => {
+    if (err) {
+      console.error(err)
+      return res.status(500).json({ error: 'Error inserting event data' })
+    }
+    return res.json({ message: 'Event data inserted successfully' })
   })
 })
 
