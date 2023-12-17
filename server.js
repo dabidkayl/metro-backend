@@ -3,12 +3,21 @@ const mysql = require('mysql')
 const cors = require('cors')
 const crypto = require('crypto')
 const multer = require('multer')
-const storage = multer.memoryStorage()
+const path = require('path')
+
+const storage = multer.diskStorage({
+  destination: 'public/image/uploads/',
+  filename: (req, file, cb) => {
+    return cb(null, `${file.fieldname}_${Date.now()}${path.extname(file.originalname)}`)
+  },
+})
+
 const upload = multer({ storage: storage })
 
 const app = express()
 app.use(cors())
 app.use(express.json())
+app.use('/images', express.static(path.join(__dirname, 'public/image/uploads')))
 
 const db = mysql.createConnection({
   host: 'localhost',
@@ -170,42 +179,16 @@ app.post('/request/action', (req, res) => {
 })
 
 app.post('/create-events', upload.single('image'), (req, res) => {
-  const {
-    eventName,
-    eventLocation,
-    organizerID,
-    eventStatus,
-    eventDescription,
-    eventDate,
-    eventType,
-  } = req.body
-  const image = req.file.buffer
+  const { event, location, organizer, description, date, type } = req.body
 
-  if (
-    !eventName ||
-    !eventLocation ||
-    !organizerID ||
-    !eventStatus ||
-    !eventDescription ||
-    !eventDate ||
-    !eventType ||
-    !image
-  ) {
-    return res.status(400).json({ error: 'Please provide all required fields and an image' })
-  }
+  // Format the date to MySQL format (YYYY-MM-DD HH:MM:SS)
+  const formattedDate = new Date(date).toISOString().slice(0, 19).replace('T', ' ')
+  console.log(formattedDate)
+  const image = req.file.filename
 
   const sql =
-    'INSERT INTO events (eventName, eventLocation, organizerID, eventStatus, eventDescription, eventDate, eventType, image) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  const values = [
-    eventName,
-    eventLocation,
-    organizerID,
-    eventStatus,
-    eventDescription,
-    eventDate,
-    eventType,
-    image,
-  ]
+    'INSERT INTO event (eventName, eventLocation, organizerID, eventDescription, eventDate, eventType, image) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  const values = [event, location, organizer, description, formattedDate, type, image]
 
   db.query(sql, values, (err, data) => {
     if (err) {
