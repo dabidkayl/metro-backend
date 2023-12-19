@@ -36,22 +36,25 @@ app.get('/', (req, res) => {
   return res.json('From backend Side')
 })
 
-app.get('/joined-events/:participantId', (req, res) => {
-  const participantId = req.params.participantId
+// GET METHODS
+app.get('/joined-events/:user_id', (req, res) => {
+  const userId = req.params.user_id
 
-  const sql = `
-    SELECT e.eventID, e.eventName, e.eventDate, e.eventLocation, e.eventStatus
+  const joinedEventsSql = `
+    SELECT e.eventID AS id, e.eventName, e.eventDate, e.eventLocation, e.eventStatus
     FROM event e
-    INNER JOIN eventparticipants ep ON e.eventID = ep.event_id
-    WHERE ep.participant_id = ?
+    INNER JOIN participants p ON e.eventID = p.event_id
+    WHERE p.user_id = ?
+    ORDER BY e.eventDate DESC;
   `
 
-  db.query(sql, participantId, (err, data) => {
+  db.query(joinedEventsSql, userId, (err, result) => {
     if (err) {
       console.error('Error fetching joined events:', err)
       return res.status(500).json({ error: 'Error fetching joined events' })
     }
-    return res.json(data)
+
+    return res.json(result)
   })
 })
 
@@ -59,11 +62,14 @@ app.get('/your-events/:organizerID', (req, res) => {
   const { organizerID } = req.params
 
   const sql = `
-    SELECT eventID as id, eventName, organizerID, eventStatus, eventDescription, 
-           eventDate, eventLocation, eventType, image 
-    FROM event 
-    WHERE organizerID = ?
-    ORDER BY eventDate ASC`
+    SELECT e.eventID as id, e.eventName, e.organizerID, e.eventStatus, e.eventDescription, 
+           e.eventDate, e.eventLocation, e.eventType, e.image,
+           COUNT(p.user_id) AS participantCount
+    FROM event e
+    LEFT JOIN participants p ON e.eventID = p.event_id
+    WHERE e.organizerID = ?
+    GROUP BY e.eventID
+    ORDER BY e.eventDate ASC`
 
   db.query(sql, [organizerID], (err, data) => {
     if (err) return res.json(err)
@@ -102,6 +108,25 @@ app.get('/events', (req, res) => {
   })
 })
 
+app.get('/profile/:user_id', (req, res) => {
+  const userId = req.params.user_id
+  const sql = 'SELECT * FROM user WHERE userID = ?'
+  db.query(sql, [userId], (err, result) => {
+    if (err) {
+      console.error(err)
+      return res.status(500).json({ error: 'Error fetching user data' })
+    }
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: 'User not found' })
+    }
+    const userProfile = result[0]
+    return res.json({ user: userProfile })
+  })
+})
+
+//POST METHODS
+
 app.post('/register', (req, res) => {
   const password = typeof req.body.password === 'string' ? req.body.password : req.body.password[0]
   const hashedPassword = hashPassword(password)
@@ -136,6 +161,7 @@ app.post('/login', (req, res) => {
         lastName: result[0].last_name,
         email: result[0].email,
         type: result[0].user_type,
+        profile_pic: result[0].profile_pic,
       }
       return res.json({ success: true, data })
     } else {
@@ -179,6 +205,8 @@ app.post('/request/action', (req, res) => {
   const requestId = req.body.requestID
   const userID = req.body.userID
   let sql, message
+
+  console.log(userID)
 
   switch (action) {
     case 'Approve':
@@ -237,36 +265,101 @@ app.post('/create-events', upload.single('image'), (req, res) => {
 })
 
 app.post('/join-event', (req, res) => {
-  const { user_id, first_name, last_name, gender, age, email, address, event_id } = req.body
-  console.log(user_id)
-  const participantSql =
-    'INSERT INTO participants (user_id, first_name, last_name, address, age, gender, email) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  const participantValues = [user_id, first_name, last_name, address, age, gender, email]
+  const { user_id, first_name, last_name, gender, age, email, address, event_id, upvote } = req.body
 
-  db.query(participantSql, participantValues, (participantErr, participantResult) => {
-    if (participantErr) {
-      console.error('Error inserting participant:', participantErr)
-      return res.status(500).json({ error: 'Error joining the event' })
-    }
+  const checkParticipantSql = 'SELECT * FROM participants WHERE user_id = ? AND event_id = ?'
+  const checkParticipantValues = [user_id, event_id]
 
-    const participantId = participantResult.insertId
-    const eventParticipantSql =
-      'INSERT INTO eventparticipants (participant_id, event_id) VALUES (?, ?)'
-    const eventParticipantValues = [participantId, event_id]
+  db.query(
+    checkParticipantSql,
+    checkParticipantValues,
+    (checkParticipantErr, checkParticipantResult) => {
+      if (checkParticipantErr) {
+        console.error('Error checking participant:', checkParticipantErr)
+        return res.status(500).json({ error: 'Error joining the event' })
+      }
 
-    db.query(
-      eventParticipantSql,
-      eventParticipantValues,
-      (eventParticipantErr, eventParticipantResult) => {
-        if (eventParticipantErr) {
-          console.error('Error adding participant to event:', eventParticipantErr)
+      if (checkParticipantResult.length > 0) {
+        return res.json({ message: 'User has already joined this event' })
+      }
+
+      const participantSql =
+        'INSERT INTO participants (user_id, first_name, last_name, address, age, gender, email, event_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      const participantValues = [
+        user_id,
+        first_name,
+        last_name,
+        address,
+        age,
+        gender,
+        email,
+        event_id,
+      ]
+
+      db.query(participantSql, participantValues, (participantErr, participantResult) => {
+        if (participantErr) {
+          console.error('Error inserting participant:', participantErr)
           return res.status(500).json({ error: 'Error joining the event' })
         }
-        return res.json({ message: 'Participant joined the event successfully' })
-      },
-    )
-  })
+
+        // Participant inserted successfully, now update upvote in the event table
+        const updateEventSql = 'UPDATE event SET upvote = upvote + 1 WHERE eventID = ?'
+        const updateEventValues = [event_id]
+
+        db.query(updateEventSql, updateEventValues, (updateEventErr, updateEventResult) => {
+          if (updateEventErr) {
+            console.error('Error updating event upvote:', updateEventErr)
+            return res.status(500).json({ error: 'Error joining the event' })
+          }
+
+          return res.json({ message: 'Participant joined the event successfully' })
+        })
+      })
+    },
+  )
 })
+
+// app.post('/join-event', (req, res) => {
+//   const { user_id, first_name, last_name, gender, age, email, address, event_id, upvote } = req.body
+
+//   const checkParticipantSql = 'SELECT * FROM participants WHERE user_id = ? AND event_id = ?'
+//   const checkParticipantValues = [user_id, event_id]
+
+//   db.query(
+//     checkParticipantSql,
+//     checkParticipantValues,
+//     (checkParticipantErr, checkParticipantResult) => {
+//       if (checkParticipantErr) {
+//         console.error('Error checking participant:', checkParticipantErr)
+//         return res.status(500).json({ error: 'Error joining the event' })
+//       }
+
+//       if (checkParticipantResult.length > 0) {
+//         return res.json({ message: 'User has already joined this event' })
+//       }
+//       const participantSql =
+//         'INSERT INTO participants (user_id, first_name, last_name, address, age, gender, email, event_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+//       const participantValues = [
+//         user_id,
+//         first_name,
+//         last_name,
+//         address,
+//         age,
+//         gender,
+//         email,
+//         event_id,
+//       ]
+
+//       db.query(participantSql, participantValues, (participantErr, participantResult) => {
+//         if (participantErr) {
+//           console.error('Error inserting participant:', participantErr)
+//           return res.status(500).json({ error: 'Error joining the event' })
+//         }
+//         return res.json({ message: 'Participant joined the event successfully' })
+//       })
+//     },
+//   )
+// })
 
 app.post('/delete-event', (req, res) => {
   const { eventID } = req.body
@@ -278,6 +371,31 @@ app.post('/delete-event', (req, res) => {
       throw err
     }
     res.status(200).json({ message: 'Event deleted successfully.' })
+  })
+})
+
+app.post('/edit-profile', upload.single('profilePic'), (req, res) => {
+  const { userID, firstName, lastName, email, password } = req.body
+  const profilePic = req.file ? req.file.filename : null
+  const hashedPassword = hashPassword(password)
+
+  const sql =
+    'UPDATE user SET first_name=?, last_name=?, email=?, password=?, profile_pic=? WHERE userID=?'
+  const values = [
+    firstName || null,
+    lastName || null,
+    email || null,
+    hashedPassword || null,
+    profilePic || null,
+    userID,
+  ]
+
+  db.query(sql, values, (err, data) => {
+    if (err) {
+      console.error(err)
+      return res.status(500).json({ error: 'Error updating user data' })
+    }
+    return res.json({ message: 'User data updated successfully' })
   })
 })
 
